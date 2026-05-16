@@ -1,6 +1,6 @@
 # =========================================================
 # GPX.py
-# Streamlit GPS Tracker
+# Streamlit Mobile GPS Tracker
 # Compatible with Streamlit Cloud
 # =========================================================
 
@@ -8,38 +8,20 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import time
-import random
+import streamlit.components.v1 as components
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
-    page_title="GPS Tracker",
+    page_title="Mobile GPS Tracker",
     page_icon="📍",
     layout="wide"
 )
 
 # =========================================================
-# GPS FUNCTION
-# =========================================================
-# SOSTITUISCI questa funzione con il tuo GPS reale
-# se usi hardware GPS o API esterne.
-# Questa versione genera coordinate simulate.
-
-def get_position():
-
-    base_lat = 41.9028
-    base_lon = 12.4964
-
-    lat = base_lat + random.uniform(-0.0005, 0.0005)
-    lon = base_lon + random.uniform(-0.0005, 0.0005)
-
-    return lat, lon
-
-
-# =========================================================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================================================
 
 if "tracking" not in st.session_state:
@@ -48,16 +30,27 @@ if "tracking" not in st.session_state:
 if "gps_data" not in st.session_state:
     st.session_state.gps_data = []
 
-if "refresh_rate" not in st.session_state:
-    st.session_state.refresh_rate = 1
+if "last_sample_time" not in st.session_state:
+    st.session_state.last_sample_time = 0
+
+if "latest_position" not in st.session_state:
+    st.session_state.latest_position = None
 
 
 # =========================================================
-# HEADER
+# TITLE
 # =========================================================
 
-st.title("📍 GPS Tracker")
-st.markdown("Tracking continuo posizione con export CSV")
+st.title("📍 Mobile GPS Tracker")
+
+st.markdown("""
+Questa app legge il GPS direttamente dal telefono/browser.
+
+⚠️ IMPORTANTE:
+- Apri da smartphone
+- Consenti accesso alla posizione
+- Tieni aperta la pagina durante il tracking
+""")
 
 
 # =========================================================
@@ -66,15 +59,77 @@ st.markdown("Tracking continuo posizione con export CSV")
 
 st.sidebar.header("⚙️ Configurazione")
 
-refresh_rate = st.sidebar.slider(
-    "Intervallo aggiornamento (secondi)",
+sample_interval = st.sidebar.slider(
+    "Campionamento GPS (secondi)",
     min_value=1,
-    max_value=10,
-    value=1
+    max_value=300,
+    value=20,
+    step=1
 )
 
-st.session_state.refresh_rate = refresh_rate
+st.sidebar.write(f"Intervallo corrente: {sample_interval} sec")
 
+
+# =========================================================
+# GPS JAVASCRIPT COMPONENT
+# =========================================================
+
+gps_component = components.html(
+    """
+    <script>
+
+    function sendPosition(position) {
+
+        const coords = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy,
+            timestamp: new Date().toISOString()
+        };
+
+        const streamlitDoc = window.parent.document;
+
+        const textArea = streamlitDoc.querySelector('textarea');
+
+        if (textArea) {
+            textArea.value = JSON.stringify(coords);
+            textArea.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+    }
+
+    function errorHandler(error) {
+        console.log(error);
+    }
+
+    if (navigator.geolocation) {
+
+        navigator.geolocation.watchPosition(
+            sendPosition,
+            errorHandler,
+            {
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: 10000
+            }
+        );
+
+    }
+
+    </script>
+    """,
+    height=0,
+)
+
+
+# =========================================================
+# HIDDEN INPUT
+# =========================================================
+
+gps_raw = st.text_area(
+    "gps_hidden",
+    key="gps_hidden",
+    label_visibility="collapsed"
+)
 
 # =========================================================
 # BUTTONS
@@ -84,17 +139,17 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
 
-    if st.button("▶️ START TRACKING", use_container_width=True):
+    if st.button("▶️ START", use_container_width=True):
         st.session_state.tracking = True
 
 with col2:
 
-    if st.button("⏹️ STOP TRACKING", use_container_width=True):
+    if st.button("⏹️ STOP", use_container_width=True):
         st.session_state.tracking = False
 
 with col3:
 
-    if st.button("🗑️ CLEAR DATA", use_container_width=True):
+    if st.button("🗑️ CLEAR", use_container_width=True):
         st.session_state.gps_data = []
 
 
@@ -103,79 +158,102 @@ with col3:
 # =========================================================
 
 if st.session_state.tracking:
-    st.success("🟢 Tracking ATTIVO")
+    st.success("🟢 Tracking attivo")
 else:
-    st.warning("🔴 Tracking FERMO")
+    st.warning("🔴 Tracking fermo")
 
 
 # =========================================================
-# TRACKING LOOP
+# GPS PARSING
 # =========================================================
 
-if st.session_state.tracking:
+if gps_raw:
 
-    lat, lon = get_position()
+    try:
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        import json
 
-    row = {
-        "timestamp": timestamp,
-        "latitude": lat,
-        "longitude": lon
-    }
+        gps = json.loads(gps_raw)
 
-    st.session_state.gps_data.append(row)
+        st.session_state.latest_position = gps
 
-    # Limite sicurezza memoria
-    MAX_POINTS = 10000
-
-    if len(st.session_state.gps_data) > MAX_POINTS:
-        st.session_state.gps_data.pop(0)
-
-    # Attesa
-    time.sleep(st.session_state.refresh_rate)
-
-    # Refresh automatico
-    st.rerun()
+    except:
+        pass
 
 
 # =========================================================
-# DATAFRAME
+# TRACKING
+# =========================================================
+
+if (
+    st.session_state.tracking
+    and st.session_state.latest_position is not None
+):
+
+    current_time = time.time()
+
+    elapsed = current_time - st.session_state.last_sample_time
+
+    if elapsed >= sample_interval:
+
+        gps = st.session_state.latest_position
+
+        row = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "latitude": gps["latitude"],
+            "longitude": gps["longitude"],
+            "accuracy_m": round(gps["accuracy"], 2)
+        }
+
+        st.session_state.gps_data.append(row)
+
+        st.session_state.last_sample_time = current_time
+
+
+# =========================================================
+# DATAFRAME LIVE
 # =========================================================
 
 df = pd.DataFrame(st.session_state.gps_data)
 
 st.subheader("📋 Posizioni Registrate")
 
-st.dataframe(
-    df,
-    use_container_width=True,
-    height=500
-)
+table_placeholder = st.empty()
+
+with table_placeholder:
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        height=400
+    )
 
 
 # =========================================================
-# METRICS
+# LIVE METRICS
 # =========================================================
 
 if not df.empty:
 
     latest = df.iloc[-1]
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
 
     with m1:
-        st.metric("Ultima Latitudine", f"{latest['latitude']:.6f}")
+        st.metric("Latitudine", f"{latest['latitude']:.6f}")
 
     with m2:
-        st.metric("Ultima Longitudine", f"{latest['longitude']:.6f}")
+        st.metric("Longitudine", f"{latest['longitude']:.6f}")
 
     with m3:
-        st.metric("Punti Registrati", len(df))
+        st.metric("Accuratezza", f"{latest['accuracy_m']} m")
+
+    with m4:
+        st.metric("Punti", len(df))
 
 
 # =========================================================
-# MAPPA
+# MAP
 # =========================================================
 
 if not df.empty:
@@ -210,8 +288,18 @@ if not df.empty:
 
 
 # =========================================================
+# AUTO REFRESH
+# =========================================================
+
+if st.session_state.tracking:
+    time.sleep(1)
+    st.rerun()
+
+
+# =========================================================
 # FOOTER
 # =========================================================
 
 st.markdown("---")
-st.caption("Streamlit GPS Tracker • Ready for Streamlit Cloud")
+
+st.caption("📱 Mobile GPS Tracker • Streamlit Cloud Ready")
