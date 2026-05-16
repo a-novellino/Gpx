@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import time
-from datetime import datetime
+import json
 import streamlit.components.v1 as components
+from datetime import datetime
 
 # =========================================================
 # CONFIG
@@ -14,106 +15,95 @@ st.set_page_config(page_title="GPS Tracker", page_icon="📍", layout="wide")
 # STATE
 # =========================================================
 
-if "tracking" not in st.session_state:
-    st.session_state.tracking = False
-
 if "data" not in st.session_state:
     st.session_state.data = []
 
-if "last_sample" not in st.session_state:
-    st.session_state.last_sample = 0
+if "tracking" not in st.session_state:
+    st.session_state.tracking = False
+
+if "last_time" not in st.session_state:
+    st.session_state.last_time = 0
 
 # =========================================================
-# UI
+# TITLE
 # =========================================================
 
-st.title("📍 GPS Tracker (Streamlit Cloud Safe)")
+st.title("📍 GPS Tracker semplice")
 
-interval = st.sidebar.slider("Campionamento (sec)", 1, 120, 20)
+st.markdown("Apri da smartphone e consenti posizione")
+
+# =========================================================
+# CONTROLS
+# =========================================================
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("▶️ START"):
+    if st.button("START"):
         st.session_state.tracking = True
 
 with col2:
-    if st.button("⏹️ STOP"):
+    if st.button("STOP"):
         st.session_state.tracking = False
 
 with col3:
-    if st.button("🗑️ CLEAR"):
+    if st.button("CLEAR"):
         st.session_state.data = []
 
-st.write("Status:", "🟢 RUNNING" if st.session_state.tracking else "🔴 STOPPED")
+interval = st.slider("Campionamento (sec)", 5, 60, 20)
+
+st.write("Stato:", "🟢 ON" if st.session_state.tracking else "🔴 OFF")
 
 # =========================================================
-# GPS HTML (ONLY SOURCE OF TRUTH)
+# GPS JS (scrive in localStorage)
 # =========================================================
 
-gps_html = """
+components.html(
+"""
 <script>
-navigator.geolocation.getCurrentPosition(
-    function(pos) {
-        const data = {
-            lat: pos.coords.latitude,
-            lon: pos.coords.longitude,
-            acc: pos.coords.accuracy
-        };
+function savePosition(pos) {
+    const data = {
+        lat: pos.coords.latitude,
+        lon: pos.coords.longitude,
+        acc: pos.coords.accuracy,
+        time: new Date().toISOString()
+    };
+    localStorage.setItem("gps", JSON.stringify(data));
+}
 
-        // salva in localStorage (Streamlit può leggerlo indirettamente)
-        localStorage.setItem("gps_data", JSON.stringify(data));
-    },
-    function(err) {
-        console.log(err);
-    },
+navigator.geolocation.watchPosition(
+    savePosition,
+    (err) => console.log(err),
     { enableHighAccuracy: true }
 );
 </script>
-"""
-
-components.html(gps_html, height=0)
-
-# =========================================================
-# READ GPS FROM LOCAL STORAGE VIA HTML POLLING
-# =========================================================
-
-gps_reader = components.html("""
-<script>
-function sendToStreamlit() {
-    const data = localStorage.getItem("gps_data");
-    if (data) {
-        document.title = data; // hack semplice ma stabile
-    }
-}
-setInterval(sendToStreamlit, 1000);
-</script>
-""", height=0)
+""",
+height=0
+)
 
 # =========================================================
-# MANUAL INPUT FALLBACK (WORKING PART)
+# READ GPS FROM localStorage (simple input bridge)
 # =========================================================
 
-gps_raw = st.text_input("GPS RAW (auto fallback / debug)")
+gps_raw = st.text_input("gps_bridge", label_visibility="collapsed")
 
 gps = None
 
 if gps_raw:
     try:
-        import json
         gps = json.loads(gps_raw)
     except:
         pass
 
 # =========================================================
-# TRACKING LOGIC
+# SAVE DATA
 # =========================================================
 
 now = time.time()
 
 if st.session_state.tracking and gps:
 
-    if now - st.session_state.last_sample >= interval:
+    if now - st.session_state.last_time >= interval:
 
         st.session_state.data.append({
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -122,35 +112,17 @@ if st.session_state.tracking and gps:
             "accuracy": gps["acc"]
         })
 
-        st.session_state.last_sample = now
+        st.session_state.last_time = now
 
 # =========================================================
-# TABLE LIVE (FIXED)
+# TABLE LIVE
 # =========================================================
 
 df = pd.DataFrame(st.session_state.data)
 
-st.subheader("📋 Posizioni Registrate (LIVE)")
+st.subheader("📋 Posizioni salvate")
 
 st.dataframe(df, use_container_width=True)
-
-# =========================================================
-# METRICS
-# =========================================================
-
-if not df.empty:
-    last = df.iloc[-1]
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.metric("Lat", last["latitude"])
-
-    with c2:
-        st.metric("Lon", last["longitude"])
-
-    with c3:
-        st.metric("Punti", len(df))
 
 # =========================================================
 # MAP
@@ -160,7 +132,7 @@ if not df.empty:
     st.map(df.rename(columns={"latitude": "lat", "longitude": "lon"}))
 
 # =========================================================
-# DOWNLOAD CSV
+# DOWNLOAD
 # =========================================================
 
 if not df.empty:
@@ -176,5 +148,5 @@ if not df.empty:
 # =========================================================
 
 if st.session_state.tracking:
-    time.sleep(1)
+    time.sleep(2)
     st.rerun()
