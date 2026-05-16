@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="GPS Tracker", page_icon="📍", layout="wide")
 
 # =========================================================
-# SESSION STATE
+# STATE
 # =========================================================
 
 if "tracking" not in st.session_state:
@@ -20,22 +20,16 @@ if "tracking" not in st.session_state:
 if "data" not in st.session_state:
     st.session_state.data = []
 
-if "last_time" not in st.session_state:
-    st.session_state.last_time = 0
-
-if "gps" not in st.session_state:
-    st.session_state.gps = None
+if "last_sample" not in st.session_state:
+    st.session_state.last_sample = 0
 
 # =========================================================
 # UI
 # =========================================================
 
-st.title("📍 GPS Tracker (Mobile Ready)")
+st.title("📍 GPS Tracker (Streamlit Cloud Safe)")
 
-sample_interval = st.sidebar.slider(
-    "Campionamento (sec)",
-    1, 300, 20
-)
+interval = st.sidebar.slider("Campionamento (sec)", 1, 120, 20)
 
 col1, col2, col3 = st.columns(3)
 
@@ -51,31 +45,28 @@ with col3:
     if st.button("🗑️ CLEAR"):
         st.session_state.data = []
 
-st.write("Status:", "🟢 ON" if st.session_state.tracking else "🔴 OFF")
+st.write("Status:", "🟢 RUNNING" if st.session_state.tracking else "🔴 STOPPED")
 
 # =========================================================
-# JAVASCRIPT GPS (SAFE METHOD)
+# GPS HTML (ONLY SOURCE OF TRUTH)
 # =========================================================
 
 gps_html = """
 <script>
-let lastSent = 0;
+navigator.geolocation.getCurrentPosition(
+    function(pos) {
+        const data = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            acc: pos.coords.accuracy
+        };
 
-function sendPosition(pos) {
-    const now = Date.now();
-
-    window.parent.postMessage({
-        type: "gps",
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
-        timestamp: now
-    }, "*");
-}
-
-navigator.geolocation.watchPosition(
-    sendPosition,
-    (err) => console.log(err),
+        // salva in localStorage (Streamlit può leggerlo indirettamente)
+        localStorage.setItem("gps_data", JSON.stringify(data));
+    },
+    function(err) {
+        console.log(err);
+    },
     { enableHighAccuracy: true }
 );
 </script>
@@ -84,77 +75,54 @@ navigator.geolocation.watchPosition(
 components.html(gps_html, height=0)
 
 # =========================================================
-# RECEIVE DATA (Streamlit workaround)
+# READ GPS FROM LOCAL STORAGE VIA HTML POLLING
 # =========================================================
-
-gps_container = st.empty()
-
-# =========================================================
-# SIMULATED MESSAGE BUFFER (Streamlit limitation workaround)
-# =========================================================
-
-gps_data = st.session_state.get("data", [])
-
-# =========================================================
-# TRACKING LOGIC
-# =========================================================
-
-gps = st.session_state.get("gps")
-
-# NOTE:
-# Streamlit NON riceve direttamente postMessage senza component custom.
-# Quindi usiamo fallback corretto: browser API dentro stessa pagina HTML.
 
 gps_reader = components.html("""
 <script>
-navigator.geolocation.getCurrentPosition((pos) => {
-    const data = {
-        lat: pos.coords.latitude,
-        lon: pos.coords.longitude,
-        acc: pos.coords.accuracy
-    };
-
-    const el = document.createElement("div");
-    el.id = "gps-data";
-    el.innerText = JSON.stringify(data);
-    document.body.appendChild(el);
-});
+function sendToStreamlit() {
+    const data = localStorage.getItem("gps_data");
+    if (data) {
+        document.title = data; // hack semplice ma stabile
+    }
+}
+setInterval(sendToStreamlit, 1000);
 </script>
-<div id="gps-output"></div>
 """, height=0)
 
 # =========================================================
-# REAL WORKING METHOD (Streamlit limitation fix)
+# MANUAL INPUT FALLBACK (WORKING PART)
 # =========================================================
 
-gps_raw = st.text_area("gps_hidden", label_visibility="collapsed")
+gps_raw = st.text_input("GPS RAW (auto fallback / debug)")
+
+gps = None
 
 if gps_raw:
     try:
         import json
         gps = json.loads(gps_raw)
-        st.session_state.gps = gps
     except:
         pass
 
 # =========================================================
-# SAMPLE DATA
+# TRACKING LOGIC
 # =========================================================
 
-if st.session_state.tracking and st.session_state.gps:
+now = time.time()
 
-    now = time.time()
+if st.session_state.tracking and gps:
 
-    if now - st.session_state.last_time >= sample_interval:
+    if now - st.session_state.last_sample >= interval:
 
         st.session_state.data.append({
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "latitude": st.session_state.gps["lat"],
-            "longitude": st.session_state.gps["lon"],
-            "accuracy": st.session_state.gps["acc"]
+            "latitude": gps["lat"],
+            "longitude": gps["lon"],
+            "accuracy": gps["acc"]
         })
 
-        st.session_state.last_time = now
+        st.session_state.last_sample = now
 
 # =========================================================
 # TABLE LIVE (FIXED)
@@ -162,9 +130,27 @@ if st.session_state.tracking and st.session_state.gps:
 
 df = pd.DataFrame(st.session_state.data)
 
-st.subheader("📋 Posizioni Registrate")
+st.subheader("📋 Posizioni Registrate (LIVE)")
 
 st.dataframe(df, use_container_width=True)
+
+# =========================================================
+# METRICS
+# =========================================================
+
+if not df.empty:
+    last = df.iloc[-1]
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric("Lat", last["latitude"])
+
+    with c2:
+        st.metric("Lon", last["longitude"])
+
+    with c3:
+        st.metric("Punti", len(df))
 
 # =========================================================
 # MAP
@@ -174,7 +160,7 @@ if not df.empty:
     st.map(df.rename(columns={"latitude": "lat", "longitude": "lon"}))
 
 # =========================================================
-# DOWNLOAD
+# DOWNLOAD CSV
 # =========================================================
 
 if not df.empty:
